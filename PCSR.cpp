@@ -1,9 +1,16 @@
 #include <algorithm>
+#include <cassert>
 #include <queue>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+#include <tuple>
 #include <vector>
+#include <random>
+#include <numeric>
+#include <chrono>
+#include <iostream>
 
 using namespace std;
 
@@ -69,6 +76,10 @@ public:
   std::vector<node_t> nodes;
   edge_list_t edges;
 
+  int recent_slides;
+  int slide_time;
+  int redistribution_time;
+
   PCSR(uint32_t init_n);
   ~PCSR();
   void double_list();
@@ -107,8 +118,12 @@ void PCSR::clear() {
   int n = 0;
   free(edges.items);
   edges.N = 2 << bsr_word(n);
-  edges.logN = (1 << bsr_word(bsr_word(edges.N) + 1));
+  edges.logN = (2 << bsr_word(bsr_word(edges.N) + 1));
   edges.H = bsr_word(edges.N / edges.logN);
+
+  recent_slides = 0;
+  slide_time = 0;
+  redistribution_time = 0;
 }
 
 vector<float> PCSR::pagerank(std::vector<float> const &node_values) {
@@ -291,7 +306,7 @@ void PCSR::redistribute(int index, int len) {
 
 void PCSR::double_list() {
   edges.N *= 2;
-  edges.logN = (1 << bsr_word(bsr_word(edges.N) + 1));
+  edges.logN = (2 << bsr_word(bsr_word(edges.N) + 1));
   edges.H = bsr_word(edges.N / edges.logN);
   edges.items =
       (edge_t *)realloc(edges.items, edges.N * sizeof(*(edges.items)));
@@ -304,7 +319,7 @@ void PCSR::double_list() {
 
 void PCSR::half_list() {
   edges.N /= 2;
-  edges.logN = (1 << bsr_word(bsr_word(edges.N) + 1));
+  edges.logN = (2 << bsr_word(bsr_word(edges.N) + 1));
   edges.H = bsr_word(edges.N / edges.logN);
   edge_t *new_array = (edge_t *)malloc(edges.N * sizeof(*(edges.items)));
   int j = 0;
@@ -328,6 +343,9 @@ int PCSR::slide_right(int index) {
   edges.items[index].dest = 0;
   edges.items[index].value = 0;
   index++;
+
+  recent_slides = 0;
+
   while (index < edges.N && !is_null(edges.items[index])) {
     edge_t temp = edges.items[index];
     edges.items[index] = el;
@@ -341,6 +359,8 @@ int PCSR::slide_right(int index) {
     }
     el = temp;
     index++;
+
+    recent_slides++;
   }
   if (!is_null(el) && is_sentinel(el)) {
     // fixing pointer of node that goes to this sentinel
@@ -545,33 +565,46 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
           binary_search(&edges, &elem, node.beginning + 1, node.end);
       return insert(loc_to_add, elem, src);
     } else {
+      // auto t1 = chrono::high_resolution_clock::now();
       if (slide_right(index) == -1) {
         index -= 1;
         slide_left(index);
       }
+      // auto t2 = chrono::high_resolution_clock::now();
+      // auto micro_int = chrono::duration_cast<chrono::microseconds>(t2 - t1);
+      // slide_time += micro_int.count();
     }
     edges.items[index].value = elem.value;
     edges.items[index].dest = elem.dest;
   }
 
-  double density = get_density(&edges, node_index, len);
+   // density = get_density(&edges, node_index, len);
 
   // spill over into next level up, node is completely full.
+  /*
   if (density == 1) {
     node_index = find_node(node_index, len * 2);
     redistribute(node_index, len * 2);
   } else {
     // makes the last slot in a section empty so you can always slide right
-    redistribute(node_index, len);
+    if (recent_slides > edges.logN / 4)
+        redistribute(node_index, len);
   }
+  */
+
+  // auto t1 = chrono::high_resolution_clock::now();
 
   // get density of the leaf you are in
   pair_double density_b = density_bound(&edges, level);
-  density = get_density(&edges, node_index, len);
+  double density = get_density(&edges, node_index, len);
 
   // while density too high, go up the implicit tree
   // go up to the biggest node above the density bound
+
+  int flag = 0;
+
   while (density >= density_b.y) {
+    flag = 1;
     len *= 2;
     if (len <= edges.N) {
       level--;
@@ -586,7 +619,13 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
       return find_elem_pointer(&edges, 0, elem);
     }
   }
-  redistribute(node_index, len);
+  // if ((flag || recent_slides > edges.logN / 8) && (!is_null(edges.items[node_index + len - 1])))
+  if (flag || recent_slides > edges.logN / 8)
+    redistribute(node_index, len);
+
+  // auto t2 = chrono::high_resolution_clock::now();
+  // auto micro_int = chrono::duration_cast<chrono::microseconds>(t2 - t1);
+  // redistribution_time += micro_int.count();
 
   return find_elem_pointer(&edges, node_index, elem);
 }
@@ -695,7 +734,7 @@ void PCSR::add_edge_update(uint32_t src, uint32_t dest, uint32_t value) {
 
 PCSR::PCSR(uint32_t init_n) {
   edges.N = 2 << bsr_word(init_n);
-  edges.logN = (1 << bsr_word(bsr_word(edges.N) + 1));
+  edges.logN = (2 << bsr_word(bsr_word(edges.N) + 1));
   edges.H = bsr_word(edges.N / edges.logN);
 
   edges.items = (edge_t *)malloc(edges.N * sizeof(*(edges.items)));
@@ -707,25 +746,107 @@ PCSR::PCSR(uint32_t init_n) {
   for (int i = 0; i < init_n; i++) {
     add_node();
   }
+
+  recent_slides = 0;
+  slide_time = 0;
+  redistribution_time = 0;
 }
 
 PCSR::~PCSR() { free(edges.items); }
 
-int main() {
+int main(int argc, char** argv) {
+
+  int mode = 0;  // default: random insertions
+  if (argc == 2) {
+    // mode 0: random; mode 1: hammer
+    mode = atoi(argv[1]);
+  }
   // initialize the structure
   // How many nodes you want it to start with
-  PCSR pcsr = PCSR(10);
 
-  // add some edges
-  for (int i = 0; i < 5; i++) {
-    pcsr.add_edge(i, i, 1);
+  int num_nodes = 5000000; // 5*10^6
+  PCSR pcsr = PCSR(num_nodes);
+
+  // random_device rd;
+  // mt19937 generator(rd());
+  mt19937 generator(123);
+  uniform_int_distribution<int> dist(0, 99999);
+
+  // srand(time(NULL));
+
+  // generate edges
+  int m = 100000000; // 10^8
+  vector<pair<int, int>> initial_edges;
+  for (int i = 0; i < m; ++i) {
+    int v1 = dist(generator);
+    int v2 = dist(generator);
+
+    while (v1 == v2) {
+        v2 = dist(generator);
+    }
+    initial_edges.push_back(make_pair(v1, v2));
+  }
+
+  // add new edges with different patterns
+  int m_prime = 100000000; // 10^8
+
+  vector<pair<int, int>> random_edges;
+  vector<pair<int, int>> hammer_edges;
+
+  if (mode == 0) {
+    for (int i = 0; i < m_prime; ++i) {
+    int v1 = dist(generator);
+    int v2 = dist(generator);
+
+    while (v1 == v2) {
+        v2 = dist(generator);
+    }
+    random_edges.push_back(make_pair(v1, v2));
+  }
+  }
+  else if (mode == 1) {
+    vector<int> v_id(num_nodes);
+    iota(v_id.begin(), v_id.end(), 0);
+    shuffle(v_id.begin(), v_id.end(), generator);
+    uniform_int_distribution<int> dist_former(0, num_nodes/100000);
+    uniform_int_distribution<int> dist_latter(num_nodes/100000 + 1, num_nodes - 1);
+
+    for (int i = 0; i < m_prime; ++i) {
+      int v1 = dist_former(generator);
+      int v2 = dist_latter(generator);
+      hammer_edges.push_back(make_pair(v1, v2));
+    }
+  }
+
+
+  // add inital edges
+  for (int i = 0; i < m; i++) {
+    pcsr.add_edge_update(initial_edges[i].first, initial_edges[i].second, 1);
   }
   // update the values of some edges
+  vector<pair<int, int>> all_updates;
 
-  for (int i = 0; i < 5; i++) {
-    pcsr.add_edge_update(i, i, 2);
+  if (mode == 0) {
+    all_updates = random_edges;
+  }
+  else if (mode == 1) {
+    all_updates = hammer_edges;
   }
 
-  // print out the graph
-  pcsr.print_graph();
+  assert(all_updates.size() > 0);
+
+  auto t1 = chrono::high_resolution_clock::now();
+  for (int i = 0; i < m_prime; i++) {
+    pcsr.add_edge_update(all_updates[i].first, all_updates[i].second, 2);
+  }
+  auto t2 = chrono::high_resolution_clock::now();
+  auto ms_int = chrono::duration_cast<chrono::milliseconds>(t2 - t1);
+  cout << "time : " << ms_int.count() << " ms" << endl;
+
+  // cout << "slide: " << (double)(pcsr.slide_time) / 1000 << " ms" << endl;
+  // cout << "rebalance: " << (double)(pcsr.redistribution_time) / 1000 << " ms" << endl;
+
+  cout << "N: " << pcsr.edges.N << endl;
+  cout << "logN: " << pcsr.edges.logN << endl;
+  cout << "H: " << pcsr.edges.H << endl;
 }
