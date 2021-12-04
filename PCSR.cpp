@@ -619,8 +619,7 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
       return find_elem_pointer(&edges, 0, elem);
     }
   }
-  // if ((flag || recent_slides > edges.logN / 8) && (!is_null(edges.items[node_index + len - 1])))
-  if (flag || recent_slides > edges.logN / 8)
+  if (flag || recent_slides > edges.logN / 8 || !is_null(edges.items[node_index + len - 1]))
     redistribute(node_index, len);
 
   // auto t2 = chrono::high_resolution_clock::now();
@@ -767,9 +766,9 @@ int main(int argc, char** argv) {
   int num_nodes = 5000000; // 5*10^6
   PCSR pcsr = PCSR(num_nodes);
 
-  // random_device rd;
-  // mt19937 generator(rd());
-  mt19937 generator(123);
+  random_device rd;
+  mt19937 generator(rd());
+  // mt19937 generator(123);
   uniform_int_distribution<int> dist(0, 99999);
 
   // srand(time(NULL));
