@@ -147,9 +147,11 @@ public:
   std::vector<node_t> nodes;
   edge_list_t edges;
 
-  int recent_slides;
-  int slide_time;
-  int redistribution_time;
+  // int recent_slides;
+  // int slide_time;
+  // int redistribution_time;
+  // int binary_search_time;
+  // int get_density_time;
 
   PCSR(uint32_t init_n);
   ~PCSR();
@@ -196,9 +198,11 @@ void PCSR::clear() {
   edges.logN = (2 << bsr_word(bsr_word(edges.N) + 1));
   edges.H = bsr_word(edges.N / edges.logN);
 
-  recent_slides = 0;
-  slide_time = 0;
-  redistribution_time = 0;
+  // recent_slides = 0;
+  // slide_time = 0;
+  // redistribution_time = 0;
+  // binary_search_time = 0;
+  // get_density_time = 0;
 }
 
 vector<float> PCSR::pagerank(std::vector<float> const &node_values) {
@@ -389,7 +393,7 @@ void PCSR::double_list() {
     edges.items[i].value = 0; // setting second half to null
     edges.items[i].dest = 0;  // setting second half to null
   }
-  uneven_redistribute(0, edges.N);
+  even_redistribute(0, edges.N);
 }
 
 void PCSR::half_list() {
@@ -405,7 +409,7 @@ void PCSR::half_list() {
   }
   free(edges.items);
   edges.items = new_array;
-  uneven_redistribute(0, edges.N);
+  even_redistribute(0, edges.N);
 }
 
 // index is the beginning of the sequence that you want to slide right.
@@ -419,7 +423,7 @@ int PCSR::slide_right(int index) {
   edges.items[index].value = 0;
   index++;
 
-  recent_slides = 0;
+  // recent_slides = 0;
 
   while (index < edges.N && !is_null(edges.items[index])) {
     edge_t temp = edges.items[index];
@@ -435,7 +439,7 @@ int PCSR::slide_right(int index) {
     el = temp;
     index++;
 
-    recent_slides++;
+    // recent_slides++;
   }
   if (!is_null(el) && is_sentinel(el)) {
     // fixing pointer of node that goes to this sentinel
@@ -694,12 +698,20 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
       return find_elem_pointer(&edges, 0, elem);
     }
   }
-  if (flag || recent_slides > edges.logN / 4 || !is_null(edges.items[node_index + len - 1]))
-    uneven_redistribute(node_index, len);
 
   // auto t2 = chrono::high_resolution_clock::now();
   // auto micro_int = chrono::duration_cast<chrono::microseconds>(t2 - t1);
-  // redistribution_time += micro_int.count();
+  // get_density_time += micro_int.count();
+
+  // t1 = chrono::high_resolution_clock::now();
+
+  // if (flag || recent_slides > edges.logN / 2 || !is_null(edges.items[node_index + len - 1]))
+  if (flag || !is_null(edges.items[node_index + len - 1]))
+    even_redistribute(node_index, len);
+
+  // t2 = chrono::high_resolution_clock::now();
+  // micro_int = chrono::duration_cast<chrono::microseconds>(t2 - t1);
+  // redistribution_time += micro_int.count();  
 
   return find_elem_pointer(&edges, node_index, elem);
 }
@@ -795,8 +807,15 @@ void PCSR::add_edge_update(uint32_t src, uint32_t dest, uint32_t value) {
     e.dest = dest;
     e.value = value;
 
+    // auto t1 = chrono::high_resolution_clock::now();
+    
     uint32_t loc_to_add =
         binary_search(&edges, &e, node.beginning + 1, node.end);
+
+    // auto t2 = chrono::high_resolution_clock::now();
+    // auto micro_int = chrono::duration_cast<chrono::microseconds>(t2 - t1);
+    // binary_search_time += micro_int.count();
+
     if (edges.items[loc_to_add].dest == dest) {
       edges.items[loc_to_add].value = value;
       return;
@@ -821,9 +840,11 @@ PCSR::PCSR(uint32_t init_n) {
     add_node();
   }
 
-  recent_slides = 0;
-  slide_time = 0;
-  redistribution_time = 0;
+  // recent_slides = 0;
+  // slide_time = 0;
+  // redistribution_time = 0;
+  // binary_search_time = 0;
+  // get_density_time = 0;
 }
 
 PCSR::~PCSR() { free(edges.items); }
@@ -1100,7 +1121,9 @@ int main(int argc, char** argv) {
   auto ms_int = chrono::duration_cast<chrono::milliseconds>(t2 - t1);
   cout << "time : " << ms_int.count() << " ms" << endl;
 
+  // cout << "binary search: " << (double)(pcsr.binary_search_time) / 1000 << " ms" << endl;
   // cout << "slide: " << (double)(pcsr.slide_time) / 1000 << " ms" << endl;
+  // cout << "get density: " << (double)(pcsr.get_density_time) / 1000 << " ms" << endl;
   // cout << "rebalance: " << (double)(pcsr.redistribution_time) / 1000 << " ms" << endl;
 
   cout << "N: " << pcsr.edges.N << endl;
