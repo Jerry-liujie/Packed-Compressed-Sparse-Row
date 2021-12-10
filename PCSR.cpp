@@ -194,6 +194,7 @@ public:
     void cache_update_after_redis (int index, int len);
     double cache_get_density (int index, int len);
     int find_redis_level (int index);
+    void density_check ();
 };
 
 // null overrides sentinel
@@ -209,7 +210,7 @@ void PCSR::clear() {
     int n = 0;
     free(edges.items);
     edges.N = 2 << bsr_word(n);
-    edges.logN = (4 << bsr_word(bsr_word(edges.N) + 1));
+    edges.logN = (16 << bsr_word(bsr_word(edges.N) + 1));
     edges.H = bsr_word(edges.N / edges.logN);
 
     // recent_slides = 0;
@@ -402,7 +403,7 @@ void PCSR::even_redistribute(int index, int len) {
 
 void PCSR::double_list() {
     edges.N *= 2;
-    edges.logN = (4 << bsr_word(bsr_word(edges.N) + 1));
+    edges.logN = (16 << bsr_word(bsr_word(edges.N) + 1));
     edges.H = bsr_word(edges.N / edges.logN);
     edges.items =
             (edge_t *)realloc(edges.items, edges.N * sizeof(*(edges.items)));
@@ -420,7 +421,7 @@ void PCSR::double_list() {
 
 void PCSR::half_list() {
     edges.N /= 2;
-    edges.logN = (4 << bsr_word(bsr_word(edges.N) + 1));
+    edges.logN = (16 << bsr_word(bsr_word(edges.N) + 1));
     edges.H = bsr_word(edges.N / edges.logN);
     edge_t *new_array = (edge_t *)malloc(edges.N * sizeof(*(edges.items)));
     int j = 0;
@@ -669,14 +670,10 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
                     binary_search(&edges, &elem, node.beginning + 1, node.end);
             return insert(loc_to_add, elem, src);
         } else {
-            // auto t1 = chrono::high_resolution_clock::now();
             if (slide_right(index) == -1) {
                 index -= 1;
                 slide_left(index);
             }
-            // auto t2 = chrono::high_resolution_clock::now();
-            // auto micro_int = chrono::duration_cast<chrono::microseconds>(t2 - t1);
-            // slide_time += micro_int.count();
         }
         edges.items[index].value = elem.value;
         edges.items[index].dest = elem.dest;
@@ -685,6 +682,7 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
         cache_update_after_insert(index);
     }
 
+    /*
     int level_flag = find_redis_level(node_index);
     if (level_flag == -2) {
         double_list();
@@ -698,8 +696,38 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
     else if (!is_null(edges.items[node_index + len - 1])) {
         even_redistribute(node_index, len);
     }
+    */
+    // density_check();
 
 
+    pair_double density_b = density_bound(&edges, level);
+    double density = cache_get_density(node_index, len);
+
+    // while density too high, go up the implicit tree
+    // go up to the biggest node above the density bound
+
+    int flag = 0;
+
+    while (density >= density_b.y) {
+        flag = 1;
+        len *= 2;
+        if (len <= edges.N) {
+            level--;
+            node_index = find_node(node_index, len);
+            density_b = density_bound(&edges, level);
+            density = cache_get_density(node_index, len);
+        } else {
+            // if you reach the root, double the list
+            double_list();
+
+            // search from the beginning because list was doubled
+            return find_elem_pointer(&edges, 0, elem);
+        }
+    }
+    if (flag || !is_null(edges.items[node_index+len-1])) {
+        even_redistribute(node_index, len);
+
+    }
     return find_elem_pointer(&edges, node_index, elem);
 }
 
@@ -814,7 +842,7 @@ void PCSR::add_edge_update(uint32_t src, uint32_t dest, uint32_t value) {
 
 PCSR::PCSR(uint32_t init_n) {
     edges.N = 2 << bsr_word(init_n);
-    edges.logN = (4 << bsr_word(bsr_word(edges.N) + 1));
+    edges.logN = (16 << bsr_word(bsr_word(edges.N) + 1));
     edges.H = bsr_word(edges.N / edges.logN);
 
     density_cache.resize((1 << (edges.H + 1)) - 1);
@@ -1005,7 +1033,7 @@ void PCSR::redis_rec_helper(int start_index, int end_index, int start_addr, int 
 }
 
 void PCSR::sentinel_check() {
-    if (1) {
+    if (0) {
         int num_vertices = nodes.size();
         for (int i = 0; i < num_vertices; i++) {
             assert(is_sentinel(edges.items[nodes[i].beginning]));
@@ -1022,11 +1050,9 @@ void PCSR::sentinel_check() {
 void PCSR::cache_update_after_insert (int index) {
     //index is the index of the inserted position in the edge array
     int node_id = (1 << (edges.H)) - 1 + index/edges.logN;
-    double delta = 1 / ((double) (edges.logN));
     for (int level = edges.H; level >= 0; level--) {
-        density_cache[node_id] += delta;
+        density_cache[node_id] += 1 / ((double) ( (1 << (edges.H - level)) * edges.logN));
         node_id = (node_id-1)/2;
-        delta /= 2;
     }
 }
 
@@ -1061,7 +1087,9 @@ int PCSR::find_redis_level (int index) {
         neighbor_node_id = node_id % 2 ? node_id+1 : node_id-1;
         neighbor_density_diff = abs(density_cache[node_id] - density_cache[neighbor_node_id]);
         level_density_diff = 1 - density_cache[(node_id - 1)/2];
-        if (neighbor_density_diff > neighbor_diff_threshold || level_density_diff > level_diff_threshold) break;
+        if (neighbor_density_diff > neighbor_diff_threshold || level_density_diff > level_diff_threshold) {
+            break;
+        }
 
         node_id = (node_id - 1)/2;
         level--;
@@ -1071,6 +1099,12 @@ int PCSR::find_redis_level (int index) {
     }
 
     return level;
+}
+
+void PCSR::density_check () {
+    /*for (int i = 0; i < edges.N ; i += edges.logN) {
+        assert(abs(get_density(&edges, i, edges.logN) - cache_get_density(i, edges.logN)) <= (1/((double) edges.logN)));
+    }*/
 }
 
 
@@ -1084,7 +1118,7 @@ int main(int argc, char** argv) {
     // initialize the structure
     // How many nodes you want it to start with
 
-    int num_nodes = 500000; // 5*10^5
+    int num_nodes = 5000000; // 5*10^6
     PCSR pcsr = PCSR(num_nodes);
 
     random_device rd;
@@ -1095,7 +1129,7 @@ int main(int argc, char** argv) {
     // srand(time(NULL));
 
     // generate edges
-    int m = 1000000; // 10^6
+    int m = 10000000; // 10^7
     vector<pair<int, int>> initial_edges;
     for (int i = 0; i < m; ++i) {
         int v1 = dist(generator);
@@ -1128,8 +1162,8 @@ int main(int argc, char** argv) {
         vector<int> v_id(num_nodes);
         iota(v_id.begin(), v_id.end(), 0);
         shuffle(v_id.begin(), v_id.end(), generator);
-        uniform_int_distribution<int> dist_former(0, num_nodes/100);
-        uniform_int_distribution<int> dist_latter(num_nodes/100 + 1, num_nodes - 1);
+        uniform_int_distribution<int> dist_former(0, num_nodes/100000);
+        uniform_int_distribution<int> dist_latter(num_nodes/100000 + 1, num_nodes - 1);
 
         for (int i = 0; i < m_prime; ++i) {
             int v1 = dist_former(generator);
