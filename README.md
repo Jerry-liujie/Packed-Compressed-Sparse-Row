@@ -5,6 +5,7 @@ Dynamic data structure for sparse graphs.
 Commands:
 
 g++ -std=c++11 {filename}.cpp -O3 -o a
+
 sudo perf stat -e cache-references,cache-misses ./a
 
 ```
