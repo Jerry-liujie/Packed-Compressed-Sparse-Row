@@ -1,8 +1,11 @@
-# Packed-Compressed-Sparse-Row
+# Improving Packed-Compressed-Sparse-Row for Efficient Dynamic Graph Analytics (EECS 573)
 
 Dynamic data structure for sparse graphs.
 
-compile with "g++ -std=c++11" PCSR.cpp
+Commands:
+
+g++ -std=c++11 {filename}.cpp -O3 -o a
+sudo perf stat -e cache-references,cache-misses ./a
 
 ```
   // initialize the structure with how many nodes you want it to start with
