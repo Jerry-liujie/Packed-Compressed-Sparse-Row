@@ -1,18 +1,22 @@
 #include <algorithm>
-#include <cassert>
+#include <queue>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <vector>
+#include <tuple>
+#include <assert.h>
+#include <algorithm>
 #include <queue>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <tuple>
 #include <vector>
 #include <random>
 #include <numeric>
 #include <chrono>
 #include <iostream>
-#include <cmath>
-
 
 using namespace std;
 
@@ -35,6 +39,10 @@ typedef struct _edge {
             value; // edge value of zero means it a null since we don't store 0 edges
 } edge_t;
 
+static int redis_cnt_A = 0;
+static int redis_cnt_B = 0;
+static int redis_cnt_double = 0;
+static int redis_cnt_half = 0;
 typedef struct edge_list {
     int N;
     int H;
@@ -72,95 +80,11 @@ int isPowerOfTwo(int x) { return ((x != 0) && !(x & (x - 1))); }
 // len: length of sub-level.
 int find_node(int index, int len) { return (index / len) * len; }
 
-struct cell {
-    int index;
-    int count;
-};
-
-class predictor {
-public:
-    deque<cell> predictor_array;
-    unsigned size_of_array;
-    unsigned logN;
-
-    int lookup(int index) {
-        for (auto i : predictor_array) {
-            if (i.index == index) return i.count;
-        }
-        return 0;
-    }
-
-    void insert(int index) {
-
-        bool exist = false;
-        for (size_t i = 0; i < predictor_array.size(); i++) {
-            if (index == predictor_array[i].index) {
-                if (predictor_array[i].count == logN && predictor_array.size() != 1) {
-                    predictor_array.pop_back();
-                }
-                else {
-                    if (predictor_array[i].count < logN) predictor_array[i].count++;
-                    if (i != 0) swap(predictor_array[i], predictor_array[i - 1]);
-                }
-                exist = true;
-                break;
-            }
-        }
-        if (!exist) {
-            if (predictor_array.size() == size_of_array) predictor_array.pop_back();
-            else {
-                predictor_array.push_front({index, 1});
-            }
-        }
-    }
-
-    void update(int new_index, int index) {
-        for (auto c : predictor_array) {
-            if (c.index == index) c.index = new_index;
-            return;
-        }
-    }
-
-    pair_int pred_cell_range(int start, int end) {
-        pair_int p;
-        p.x = UINT32_MAX;
-        p.y = 0;
-
-        for (auto i : predictor_array) {
-            if (start <= i.index <= end) {
-                if (i.index < p.x) p.x = i.index;
-                if (i.index > p.y) p.y = i.index;
-            }
-        }
-        if (p.x == UINT32_MAX) p.y = UINT32_MAX;
-        return p;
-    }
-};
-
-
-
-
-
-
-
-
 class PCSR {
-    predictor pred;
 public:
     // data members
     std::vector<node_t> nodes;
     edge_list_t edges;
-
-    double neighbor_diff_threshold = 0.25;
-    double level_diff_threshold = 0.6;
-
-    vector<double> density_cache;
-
-    // int recent_slides;
-    // int slide_time;
-    // int redistribution_time;
-    // int binary_search_time;
-    // int get_density_time;
 
     PCSR(uint32_t init_n);
     ~PCSR();
@@ -168,7 +92,7 @@ public:
     void half_list();
     int slide_right(int index);
     void slide_left(int index);
-    void even_redistribute(int index, int len);
+    void redistribute(int index, int len);
     void fix_sentinel(int32_t node_index, int in);
     void print_array();
     uint32_t find_value(uint32_t src, uint32_t dest);
@@ -185,26 +109,31 @@ public:
     vector<uint32_t> bfs(uint32_t start_node);
     vector<tuple<uint32_t, uint32_t, uint32_t>> get_edges();
     void clear();
-
-    void old_uneven_redistribute(int index, int len);
-    void redis_rec_helper(int start_index, int end_index, int start_addr, int end_addr, edge_t * space, vector<int> & space_for_addr, vector<int> &sums);
     void sentinel_check();
-
-    void cache_update_after_insert (int index);
-    void cache_update_after_even_redis (int index, int len);
-    void cache_update_after_uneven_redis (int index, int len, double new_left_density, double new_right_density);
-    double cache_get_density (int index, int len);
-    int find_redis_level (int index);
-    void density_check ();
-
-    void uneven_redistribute(int index, int len);
 };
+
+
 
 // null overrides sentinel
 // e.g. in rebalance, we check if an edge is null
 // first before copying it into temp, then fix the sentinels.
 bool is_sentinel(edge_t e) {
     return e.dest == UINT32_MAX || e.value == UINT32_MAX;
+}
+
+void PCSR::sentinel_check() {
+    if (0) {
+        int num_vertices = nodes.size();
+        for (int i = 0; i < num_vertices; i++) {
+            assert(is_sentinel(edges.items[nodes[i].beginning]));
+            assert(nodes[i].beginning < nodes[i].end || nodes[i].end == edges.N-1);
+            if (nodes[i].end != edges.N-1)
+                assert(is_sentinel(edges.items[nodes[i].end]));
+            for (uint32_t j = nodes[i].beginning + 1; j < nodes[i].end; j++) {
+                assert(!is_sentinel(edges.items[j]));
+            }
+        }
+    }
 }
 
 bool is_null(edge_t e) { return e.value == 0; }
@@ -215,12 +144,6 @@ void PCSR::clear() {
     edges.N = 2 << bsr_word(n);
     edges.logN = (16 << bsr_word(bsr_word(edges.N) + 1));
     edges.H = bsr_word(edges.N / edges.logN);
-
-    // recent_slides = 0;
-    // slide_time = 0;
-    // redistribution_time = 0;
-    // binary_search_time = 0;
-    // get_density_time = 0;
 }
 
 vector<float> PCSR::pagerank(std::vector<float> const &node_values) {
@@ -363,12 +286,10 @@ void PCSR::fix_sentinel(int32_t node_index, int in) {
 // Evenly redistribute elements in the ofm, given a range to look into
 // index: starting position in ofm structure
 // len: area to redistribute
-void PCSR::even_redistribute(int index, int len) {
-    // update the density cache
-    cache_update_after_even_redis(index, len);
+void PCSR::redistribute(int index, int len) {
 
-    // printf("REDISTRIBUTE: \n");
-    // print_array();
+    //printf("REDISTRIBUTE: \n");
+    //print_array();
     // std::vector<edge_t> space(len); //
     edge_t *space = (edge_t *)malloc(len * sizeof(*(edges.items)));
     int j = 0;
@@ -401,8 +322,8 @@ void PCSR::even_redistribute(int index, int len) {
         }
         index_d += step;
     }
-    //sentinel_check();
     free(space);
+    sentinel_check();
 }
 
 void PCSR::double_list() {
@@ -415,12 +336,8 @@ void PCSR::double_list() {
         edges.items[i].value = 0; // setting second half to null
         edges.items[i].dest = 0;  // setting second half to null
     }
-
-    auto size = density_cache.size() * 2 + 1;
-    auto density = density_cache[0]/2;
-    density_cache.clear();
-    density_cache.resize(size, density);
-    even_redistribute(0, edges.N);
+    redistribute(0, edges.N);
+    redis_cnt_double++;
 }
 
 void PCSR::half_list() {
@@ -436,7 +353,8 @@ void PCSR::half_list() {
     }
     free(edges.items);
     edges.items = new_array;
-    even_redistribute(0, edges.N);
+    redistribute(0, edges.N);
+    redis_cnt_half++;
 }
 
 // index is the beginning of the sequence that you want to slide right.
@@ -449,9 +367,6 @@ int PCSR::slide_right(int index) {
     edges.items[index].dest = 0;
     edges.items[index].value = 0;
     index++;
-
-    // recent_slides = 0;
-
     while (index < edges.N && !is_null(edges.items[index])) {
         edge_t temp = edges.items[index];
         edges.items[index] = el;
@@ -465,8 +380,6 @@ int PCSR::slide_right(int index) {
         }
         el = temp;
         index++;
-
-        // recent_slides++;
     }
     if (!is_null(el) && is_sentinel(el)) {
         // fixing pointer of node that goes to this sentinel
@@ -641,7 +554,6 @@ uint32_t PCSR::find_value(uint32_t src, uint32_t dest) {
         return 0;
     }
 }
-
 int total_redis = 0;
 int null_redis = 0;
 // NOTE: potentially don't need to return the index of the element that was
@@ -657,9 +569,6 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
     if (is_null(edges.items[index])) {
         edges.items[index].value = elem.value;
         edges.items[index].dest = elem.dest;
-
-        // update the density cache from leaf to root
-        cache_update_after_insert(index);
     } else {
         // if the edge already exists in the graph, update its value
         // do not make another edge
@@ -683,32 +592,23 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
         }
         edges.items[index].value = elem.value;
         edges.items[index].dest = elem.dest;
-
-        // update the density cache from leaf to root
-        cache_update_after_insert(index);
     }
 
-    /*
-    int level_flag = find_redis_level(node_index);
-    if (level_flag == -2) {
-        double_list();
-        return find_elem_pointer(&edges, 0, elem);
-    }
-    else if (level_flag != -1) {
-        int redis_len = edges.logN * (1 << (edges.H - level_flag));
-        node_index = find_node(node_index, redis_len);
-        even_redistribute(node_index, redis_len);
-    }
-    else if (!is_null(edges.items[node_index + len - 1])) {
-        even_redistribute(node_index, len);
-    }
-    */
+    //double density = get_density(&edges, node_index, len);
 
+    // spill over into next level up, node is completely full.
+    /*if (density == 1) {
+        node_index = find_node(node_index, len * 2);
+        redistribute(node_index, len * 2);
+        redis_cnt_A++;
+    } else {
+        // makes the last slot in a section empty so you can always slide right
+        //redistribute(node_index, len);
+    }*/
 
-
+    // get density of the leaf you are in
     pair_double density_b = density_bound(&edges, level);
-    double density = cache_get_density(node_index, len);
-
+    double density = get_density(&edges, node_index, len);
 
     // while density too high, go up the implicit tree
     // go up to the biggest node above the density bound
@@ -722,7 +622,7 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
             level--;
             node_index = find_node(node_index, len);
             density_b = density_bound(&edges, level);
-            density = cache_get_density(node_index, len);
+            density = get_density(&edges, node_index, len);
         } else {
             // if you reach the root, double the list
             double_list();
@@ -733,11 +633,11 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
     }
     if (flag || !is_null(edges.items[node_index+len-1])) {
         if (!is_null(edges.items[node_index+len-1])) null_redis++;
-        uneven_redistribute(node_index, len);
+        redistribute(node_index, len);
 
         total_redis++;
     }
-    //density_check();
+
     return find_elem_pointer(&edges, node_index, elem);
 }
 
@@ -832,15 +732,8 @@ void PCSR::add_edge_update(uint32_t src, uint32_t dest, uint32_t value) {
         e.dest = dest;
         e.value = value;
 
-        // auto t1 = chrono::high_resolution_clock::now();
-
         uint32_t loc_to_add =
                 binary_search(&edges, &e, node.beginning + 1, node.end);
-
-        // auto t2 = chrono::high_resolution_clock::now();
-        // auto micro_int = chrono::duration_cast<chrono::microseconds>(t2 - t1);
-        // binary_search_time += micro_int.count();
-
         if (edges.items[loc_to_add].dest == dest) {
             edges.items[loc_to_add].value = value;
             return;
@@ -855,8 +748,6 @@ PCSR::PCSR(uint32_t init_n) {
     edges.logN = (16 << bsr_word(bsr_word(edges.N) + 1));
     edges.H = bsr_word(edges.N / edges.logN);
 
-    density_cache.resize((1 << (edges.H + 1)) - 1);
-
     edges.items = (edge_t *)malloc(edges.N * sizeof(*(edges.items)));
     for (int i = 0; i < edges.N; i++) {
         edges.items[i].value = 0;
@@ -866,362 +757,9 @@ PCSR::PCSR(uint32_t init_n) {
     for (int i = 0; i < init_n; i++) {
         add_node();
     }
-
-
-    // recent_slides = 0;
-    // slide_time = 0;
-    // redistribution_time = 0;
-    // binary_search_time = 0;
-    // get_density_time = 0;
 }
 
 PCSR::~PCSR() { free(edges.items); }
-
-void PCSR::old_uneven_redistribute(int index, int len) {
-    //printf("REDISTRIBUTE: %d %d\n", index, len);
-    //print_array();
-    // std::vector<edge_t> space(len); //
-
-    edge_t *space = (edge_t *)malloc(len * sizeof(*(edges.items)));
-    vector<int> space_for_addr;
-    int j = 0;
-    int sum = 0;
-    // move all items in ofm in the range into
-    // a temp array
-    for (int i = index; i < index + len; i++) {
-        space[j] = edges.items[i];
-        // counting non-null edges
-        j += (!is_null(edges.items[i]));
-        if (!is_null(edges.items[i])) {
-            sum += 1 + pred.lookup(i);
-            space_for_addr.push_back(i);
-        }
-        // setting section to null
-        edges.items[i].value = 0;
-        edges.items[i].dest = 0;
-    }
-    //interval_list.push_back(interval_cnt);
-    //assert(j == space_for_addr.size());
-
-
-    if (j == len) {
-        j = 0;
-        for (int i = index; i < index + len; i++) {
-            edges.items[i] = space[j];
-            // counting non-null edges
-            j++;
-        }
-        free(space);
-        return;
-    }
-    double D = ((double) sum)/((double) (len/edges.logN));
-    //if (D > edges.logN) D = edges.logN;
-
-    vector<int> i_list;
-    i_list.resize(len/edges.logN);
-    int s_index = 0;
-    int temp = 0;
-    for (int i = 0; i < i_list.size(); i++) {
-        double marker = D * (double) (i+1);
-        do {
-            if (s_index == j) break;
-            if (i_list[i] == edges.logN) break;
-            temp += pred.lookup(space_for_addr[s_index]) + 1;
-            s_index++;
-            i_list[i]++;
-        } while ((double) temp < marker);
-        int temp_left = temp - pred.lookup(space_for_addr[s_index-1]) - 1;
-        if (marker - (double) temp_left < (double) temp - marker) {
-            temp = temp_left;
-            s_index--;
-            i_list[i]--;
-        }
-        assert(i_list[i] <= edges.logN);
-    }
-    i_list.back() += j-s_index;
-    if (i_list.size() == 1) i_list.front() = j;
-    int ass = 0;
-    for (auto i : i_list) {
-        ass += i;
-    }
-    assert(ass == j);
-
-    while (i_list.back() >= edges.logN) {
-        i_list.back()--;
-        for (auto &i : i_list) {
-            if (i != edges.logN) {
-                i++;
-                break;
-            }
-        }
-    }
-
-    assert(i_list.back() != edges.logN);
-
-
-    double index_d = index;
-    double step;
-    int arranged = 0;
-    for (auto i : i_list) {
-        if (i == 0) {
-            index_d += edges.logN;
-            continue;
-        }
-        step = ((double)edges.logN) / i;
-        for (int k = 0; k < i; k++) {
-            int in = index_d;
-            int addr = k + arranged;
-            edges.items[in] = space[addr];
-            pred.update(in, space_for_addr[addr]);
-            if (is_sentinel(space[addr])) {
-                // fixing pointer of node that goes to this sentinel
-                uint32_t node_index = space[addr].value;
-                if (node_index == UINT32_MAX) {
-                    node_index = 0;
-                }
-                fix_sentinel(node_index, in);
-            }
-            index_d += step;
-        }
-        arranged += i;
-    }
-    assert(arranged == j);
-    free(space);
-    //sentinel_check();
-}
-
-void PCSR::redis_rec_helper(int start_index, int end_index, int start_addr, int end_addr, edge_t * space, vector<int> & space_for_addr, vector<int> &sums) {
-    int element_cnt = end_index - start_index + 1;
-    int len = end_addr - start_addr + 1;
-    assert(element_cnt <= len);
-    if (len == edges.logN) {
-        // evenly redistribute for a uniform density
-        double index_d = start_addr;
-        double step = ((double)edges.logN) / element_cnt;
-        for (int i = 0; i < element_cnt; i++) {
-            int in = index_d;
-
-            edges.items[in] = space[start_index + i];
-            pred.update(in, space_for_addr[start_index + i]);
-            if (is_sentinel(space[start_index + i])) {
-                // fixing pointer of node that goes to this sentinel
-                uint32_t node_index = space[start_index + i].value;
-                if (node_index == UINT32_MAX) {
-                    node_index = 0;
-                }
-                fix_sentinel(node_index, in);
-            }
-            index_d += step;
-        }
-        return;
-    }
-
-    int cap = len/2;
-    int final_i = start_index+1;
-    double current_min_diff;
-    for (int i = start_index+1; i <= end_index; i++) {
-        int start_sum;
-        if (start_index == 0) start_sum = 0;
-        else start_sum = sums[start_index-1];
-        double diff = abs(((double) sums[i-1] - start_sum)/(cap - (i-start_index)) - ((double) sums[end_index] - sums[i-1])/(cap - (end_index-i+1)));
-        if (i == start_index+1)
-            current_min_diff = diff;
-        if (diff < current_min_diff) {
-            current_min_diff = diff;
-            final_i = i;
-        }
-    }
-    int level = edges.H - log2(len/edges.logN);
-    auto den_bound = density_bound(&edges, level);
-    if (final_i-start_index > cap * den_bound.y) final_i = floor(cap * den_bound.y + start_index);
-    if (final_i-start_index < element_cnt - cap * den_bound.y) final_i = ceil(start_index + element_cnt - cap * den_bound.y);
-    if (cap == edges.logN && element_cnt- (final_i-start_index) == edges.logN) final_i++;
-
-    redis_rec_helper(start_index, final_i-1, start_addr, start_addr + cap - 1, space, space_for_addr, sums);
-    redis_rec_helper(final_i, end_index, start_addr + cap, end_addr, space, space_for_addr, sums);
-
-}
-
-void PCSR::sentinel_check() {
-    if (1) {
-        int num_vertices = nodes.size();
-        for (int i = 0; i < num_vertices; i++) {
-            assert(is_sentinel(edges.items[nodes[i].beginning]));
-            assert(nodes[i].beginning < nodes[i].end || nodes[i].end == edges.N-1);
-            if (nodes[i].end != edges.N-1)
-                assert(is_sentinel(edges.items[nodes[i].end]));
-            for (uint32_t j = nodes[i].beginning + 1; j < nodes[i].end; j++) {
-                //assert(!is_sentinel(edges.items[j]));
-            }
-        }
-    }
-}
-
-void PCSR::cache_update_after_insert (int index) {
-    //index is the index of the inserted position in the edge array
-    int node_id = (1 << (edges.H)) - 1 + index/edges.logN;
-    for (int level = edges.H; level >= 0; level--) {
-        density_cache[node_id] += 1 / ((double) ( (1 << (edges.H - level)) * edges.logN));
-        node_id = (node_id-1)/2;
-    }
-}
-
-void PCSR::cache_update_after_even_redis (int index, int len) {
-    int original_level = edges.H - log2(len/edges.logN);
-    int node_id = (1 << original_level) - 1 + index/len;
-    double new_density = density_cache[node_id];
-    int level_diff = 1;
-    while (level_diff <= edges.H - original_level) {
-        node_id = node_id * 2 + 1;
-        for (int i = 0; i < (1 << level_diff); i++) {
-            density_cache[node_id + i] = new_density;
-        }
-        level_diff++;
-    }
-}
-
-double PCSR::cache_get_density (int index, int len) {
-    int level = edges.H - log2(len/edges.logN);
-    return density_cache[(1 << level) - 1 + index/len];
-}
-
-// -1 implies no action needed; -2 implies double list
-int PCSR::find_redis_level (int index) {
-    if (cache_get_density(index, edges.logN) < 1) return -1;
-
-    int node_id = (1 << (edges.H)) - 1 + index/edges.logN;
-    int neighbor_node_id;
-    int level = edges.H - 1;
-    double neighbor_density_diff;
-    double level_density_diff;
-    while (level > 0) {
-        neighbor_node_id = node_id % 2 ? node_id+1 : node_id-1;
-        neighbor_density_diff = abs(density_cache[node_id] - density_cache[neighbor_node_id]);
-        level_density_diff = 1 - density_cache[(node_id - 1)/2];
-        if (neighbor_density_diff > neighbor_diff_threshold || level_density_diff > level_diff_threshold) {
-            break;
-        }
-
-        node_id = (node_id - 1)/2;
-        level--;
-    }
-    if (level == 0 && density_cache[0] > 0.75) {
-        level = -2;
-    }
-
-    return level;
-}
-
-void PCSR::density_check () {
-    for (int i = 0; i < edges.N ; i += edges.logN) {
-//        assert(abs(get_density(&edges, i, edges.logN) - cache_get_density(i, edges.logN)) <= (1.5/((double) edges.logN)));
-    }
-}
-
-void PCSR::uneven_redistribute(int index, int len) {
-
-    if (len == edges.logN) {
-        even_redistribute(index, len);
-        return;
-    }
-
-    // update the density cache
-
-
-    edge_t *space = (edge_t *)malloc(len * sizeof(*(edges.items)));
-    int j = 0;
-
-    // move all items in ofm in the range into
-    // a temp array
-    for (int i = index; i < index + len; i++) {
-        space[j] = edges.items[i];
-        // counting non-null edges
-        j += (!is_null(edges.items[i]));
-        // setting section to null
-        edges.items[i].value = 0;
-        edges.items[i].dest = 0;
-    }
-
-    double current_left_density = cache_get_density(index, len/2);
-    double current_total_density = cache_get_density(index, len);
-    int right_j = (current_total_density + (current_left_density - current_total_density)/2) * (len/2);
-    int left_j = j - right_j;
-
-    if (right_j > len/2-1) {
-        right_j = len/2-1;
-        left_j = j - right_j;
-    }
-    if (left_j > len/2) {
-        left_j = len/2;
-        right_j = j - left_j;
-    }
-    double new_left_density = ((double) left_j) / ((double ) (len/2));
-    double new_right_density = ((double) right_j) / ((double ) (len/2));
-
-    cache_update_after_uneven_redis(index, len, new_left_density, new_right_density);
-    assert(0 <= right_j && right_j <= len/2-1);
-    assert(0 <= left_j && left_j <= len/2);
-    assert(left_j + right_j == j);
-
-
-
-    double index_d = index;
-    double step = ((double)len/2) / left_j;
-    for (int i = 0; i < left_j; i++) {
-        int in = index_d;
-
-        edges.items[in] = space[i];
-        if (is_sentinel(space[i])) {
-            // fixing pointer of node that goes to this sentinel
-            uint32_t node_index = space[i].value;
-            if (node_index == UINT32_MAX) {
-                node_index = 0;
-            }
-            fix_sentinel(node_index, in);
-        }
-        index_d += step;
-    }
-
-    index_d = index + len/2;
-    step = ((double)len/2) / right_j;
-    for (int i = 0; i < right_j; i++) {
-        int in = index_d;
-
-        edges.items[in] = space[i + left_j];
-        if (is_sentinel(space[i + left_j])) {
-            // fixing pointer of node that goes to this sentinel
-            uint32_t node_index = space[i + left_j].value;
-            if (node_index == UINT32_MAX) {
-                node_index = 0;
-            }
-            fix_sentinel(node_index, in);
-        }
-        index_d += step;
-    }
-    //sentinel_check();
-
-    free(space);
-}
-
-void PCSR::cache_update_after_uneven_redis (int index, int len, double new_left_density, double new_right_density) {
-    int original_level = edges.H - log2(len/edges.logN);
-    int node_id = (1 << original_level) - 1 + index/len;
-
-    int left_child_id = node_id * 2 + 1;
-    int right_child_id = node_id * 2 + 2;
-
-    int level_diff = 1;
-    while (level_diff <= edges.H - original_level) {
-        for (int i = 0; i < (1 << (level_diff - 1)); i++) {
-            density_cache[left_child_id + i] = new_left_density;
-            density_cache[right_child_id + i] = new_right_density;
-        }
-        level_diff++;
-        left_child_id = left_child_id * 2 + 1;
-        right_child_id = right_child_id * 2 + 1;
-    }
-}
-
 
 int main(int argc, char** argv) {
 
@@ -1323,4 +861,3 @@ int main(int argc, char** argv) {
     cout << "total: " << total_redis << endl;
     cout << "null: " << null_redis << endl;
 }
-

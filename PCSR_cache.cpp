@@ -151,10 +151,12 @@ public:
     std::vector<node_t> nodes;
     edge_list_t edges;
 
-    double neighbor_diff_threshold = 0.25;
-    double level_diff_threshold = 0.6;
+    double neighbor_diff_threshold = 0.3;
+    double level_diff_threshold = 0.4;
 
-    vector<double> density_cache;
+    vector<double> density_cache; //TODO:initialize
+
+
 
     // int recent_slides;
     // int slide_time;
@@ -186,18 +188,15 @@ public:
     vector<tuple<uint32_t, uint32_t, uint32_t>> get_edges();
     void clear();
 
-    void old_uneven_redistribute(int index, int len);
+    void uneven_redistribute(int index, int len);
     void redis_rec_helper(int start_index, int end_index, int start_addr, int end_addr, edge_t * space, vector<int> & space_for_addr, vector<int> &sums);
     void sentinel_check();
 
     void cache_update_after_insert (int index);
-    void cache_update_after_even_redis (int index, int len);
-    void cache_update_after_uneven_redis (int index, int len, double new_left_density, double new_right_density);
+    void cache_update_after_redis (int index, int len);
     double cache_get_density (int index, int len);
     int find_redis_level (int index);
     void density_check ();
-
-    void uneven_redistribute(int index, int len);
 };
 
 // null overrides sentinel
@@ -365,7 +364,7 @@ void PCSR::fix_sentinel(int32_t node_index, int in) {
 // len: area to redistribute
 void PCSR::even_redistribute(int index, int len) {
     // update the density cache
-    cache_update_after_even_redis(index, len);
+    cache_update_after_redis(index, len);
 
     // printf("REDISTRIBUTE: \n");
     // print_array();
@@ -401,8 +400,9 @@ void PCSR::even_redistribute(int index, int len) {
         }
         index_d += step;
     }
-    //sentinel_check();
     free(space);
+    sentinel_check();
+    density_check();
 }
 
 void PCSR::double_list() {
@@ -642,8 +642,6 @@ uint32_t PCSR::find_value(uint32_t src, uint32_t dest) {
     }
 }
 
-int total_redis = 0;
-int null_redis = 0;
 // NOTE: potentially don't need to return the index of the element that was
 // inserted? insert elem at index returns index that the element went to (which
 // may not be the same one that you put it at)
@@ -702,13 +700,12 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
     else if (!is_null(edges.items[node_index + len - 1])) {
         even_redistribute(node_index, len);
     }
-    */
 
+    density_check();*/
 
 
     pair_double density_b = density_bound(&edges, level);
     double density = cache_get_density(node_index, len);
-
 
     // while density too high, go up the implicit tree
     // go up to the biggest node above the density bound
@@ -732,12 +729,9 @@ uint32_t PCSR::insert(uint32_t index, edge_t elem, uint32_t src) {
         }
     }
     if (flag || !is_null(edges.items[node_index+len-1])) {
-        if (!is_null(edges.items[node_index+len-1])) null_redis++;
-        uneven_redistribute(node_index, len);
+        even_redistribute(node_index, len);
 
-        total_redis++;
     }
-    //density_check();
     return find_elem_pointer(&edges, node_index, elem);
 }
 
@@ -877,7 +871,7 @@ PCSR::PCSR(uint32_t init_n) {
 
 PCSR::~PCSR() { free(edges.items); }
 
-void PCSR::old_uneven_redistribute(int index, int len) {
+void PCSR::uneven_redistribute(int index, int len) {
     //printf("REDISTRIBUTE: %d %d\n", index, len);
     //print_array();
     // std::vector<edge_t> space(len); //
@@ -1043,7 +1037,7 @@ void PCSR::redis_rec_helper(int start_index, int end_index, int start_addr, int 
 }
 
 void PCSR::sentinel_check() {
-    if (1) {
+    if (0) {
         int num_vertices = nodes.size();
         for (int i = 0; i < num_vertices; i++) {
             assert(is_sentinel(edges.items[nodes[i].beginning]));
@@ -1051,7 +1045,7 @@ void PCSR::sentinel_check() {
             if (nodes[i].end != edges.N-1)
                 assert(is_sentinel(edges.items[nodes[i].end]));
             for (uint32_t j = nodes[i].beginning + 1; j < nodes[i].end; j++) {
-                //assert(!is_sentinel(edges.items[j]));
+                assert(!is_sentinel(edges.items[j]));
             }
         }
     }
@@ -1066,7 +1060,7 @@ void PCSR::cache_update_after_insert (int index) {
     }
 }
 
-void PCSR::cache_update_after_even_redis (int index, int len) {
+void PCSR::cache_update_after_redis (int index, int len) {
     int original_level = edges.H - log2(len/edges.logN);
     int node_id = (1 << original_level) - 1 + index/len;
     double new_density = density_cache[node_id];
@@ -1079,12 +1073,13 @@ void PCSR::cache_update_after_even_redis (int index, int len) {
         level_diff++;
     }
 }
-
 double PCSR::cache_get_density (int index, int len) {
     int level = edges.H - log2(len/edges.logN);
     return density_cache[(1 << level) - 1 + index/len];
 }
 
+int neighbor_diff_redis_count = 0;
+int level_diff_redis_count = 0;
 // -1 implies no action needed; -2 implies double list
 int PCSR::find_redis_level (int index) {
     if (cache_get_density(index, edges.logN) < 1) return -1;
@@ -1099,6 +1094,8 @@ int PCSR::find_redis_level (int index) {
         neighbor_density_diff = abs(density_cache[node_id] - density_cache[neighbor_node_id]);
         level_density_diff = 1 - density_cache[(node_id - 1)/2];
         if (neighbor_density_diff > neighbor_diff_threshold || level_density_diff > level_diff_threshold) {
+            if (neighbor_density_diff > neighbor_diff_threshold) neighbor_diff_redis_count++;
+            if (level_density_diff > level_diff_threshold) level_diff_redis_count++;
             break;
         }
 
@@ -1113,113 +1110,9 @@ int PCSR::find_redis_level (int index) {
 }
 
 void PCSR::density_check () {
-    for (int i = 0; i < edges.N ; i += edges.logN) {
-//        assert(abs(get_density(&edges, i, edges.logN) - cache_get_density(i, edges.logN)) <= (1.5/((double) edges.logN)));
-    }
-}
-
-void PCSR::uneven_redistribute(int index, int len) {
-
-    if (len == edges.logN) {
-        even_redistribute(index, len);
-        return;
-    }
-
-    // update the density cache
-
-
-    edge_t *space = (edge_t *)malloc(len * sizeof(*(edges.items)));
-    int j = 0;
-
-    // move all items in ofm in the range into
-    // a temp array
-    for (int i = index; i < index + len; i++) {
-        space[j] = edges.items[i];
-        // counting non-null edges
-        j += (!is_null(edges.items[i]));
-        // setting section to null
-        edges.items[i].value = 0;
-        edges.items[i].dest = 0;
-    }
-
-    double current_left_density = cache_get_density(index, len/2);
-    double current_total_density = cache_get_density(index, len);
-    int right_j = (current_total_density + (current_left_density - current_total_density)/2) * (len/2);
-    int left_j = j - right_j;
-
-    if (right_j > len/2-1) {
-        right_j = len/2-1;
-        left_j = j - right_j;
-    }
-    if (left_j > len/2) {
-        left_j = len/2;
-        right_j = j - left_j;
-    }
-    double new_left_density = ((double) left_j) / ((double ) (len/2));
-    double new_right_density = ((double) right_j) / ((double ) (len/2));
-
-    cache_update_after_uneven_redis(index, len, new_left_density, new_right_density);
-    assert(0 <= right_j && right_j <= len/2-1);
-    assert(0 <= left_j && left_j <= len/2);
-    assert(left_j + right_j == j);
-
-
-
-    double index_d = index;
-    double step = ((double)len/2) / left_j;
-    for (int i = 0; i < left_j; i++) {
-        int in = index_d;
-
-        edges.items[in] = space[i];
-        if (is_sentinel(space[i])) {
-            // fixing pointer of node that goes to this sentinel
-            uint32_t node_index = space[i].value;
-            if (node_index == UINT32_MAX) {
-                node_index = 0;
-            }
-            fix_sentinel(node_index, in);
-        }
-        index_d += step;
-    }
-
-    index_d = index + len/2;
-    step = ((double)len/2) / right_j;
-    for (int i = 0; i < right_j; i++) {
-        int in = index_d;
-
-        edges.items[in] = space[i + left_j];
-        if (is_sentinel(space[i + left_j])) {
-            // fixing pointer of node that goes to this sentinel
-            uint32_t node_index = space[i + left_j].value;
-            if (node_index == UINT32_MAX) {
-                node_index = 0;
-            }
-            fix_sentinel(node_index, in);
-        }
-        index_d += step;
-    }
-    //sentinel_check();
-
-    free(space);
-}
-
-void PCSR::cache_update_after_uneven_redis (int index, int len, double new_left_density, double new_right_density) {
-    int original_level = edges.H - log2(len/edges.logN);
-    int node_id = (1 << original_level) - 1 + index/len;
-
-    int left_child_id = node_id * 2 + 1;
-    int right_child_id = node_id * 2 + 2;
-
-    int level_diff = 1;
-    while (level_diff <= edges.H - original_level) {
-        for (int i = 0; i < (1 << (level_diff - 1)); i++) {
-            density_cache[left_child_id + i] = new_left_density;
-            density_cache[right_child_id + i] = new_right_density;
-        }
-        level_diff++;
-        left_child_id = left_child_id * 2 + 1;
-        right_child_id = right_child_id * 2 + 1;
-    }
+    /*for (int i = 0; i < edges.N ; i += edges.logN) {
+        assert(abs(get_density(&edges, i, edges.logN) - cache_get_density(i, edges.logN)) <= (1/((double) edges.logN)));
+    }*/
 }
 
 
@@ -1320,7 +1213,7 @@ int main(int argc, char** argv) {
     cout << "N: " << pcsr.edges.N << endl;
     cout << "logN: " << pcsr.edges.logN << endl;
     cout << "H: " << pcsr.edges.H << endl;
-    cout << "total: " << total_redis << endl;
-    cout << "null: " << null_redis << endl;
+    //cout << "total: " << total_redis << endl;
+    //cout << "null: " << null_redis << endl;
 }
 
