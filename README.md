@@ -11,7 +11,9 @@ sudo perf stat -e cache-references,cache-misses ./a
 Three implementations:
 
 (1) PCSR_baseline.cpp: Basic version of PCSR without any modifications.
+
 (2) PCSR_cache.cpp: PCSR with cached densities.
+
 (3) PCSR.cpp: PCSR with cached densities and uneven rebalance
 
 
