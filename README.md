@@ -12,7 +12,7 @@ Three implementations:
 
 (1) PCSR_baseline.cpp: Basic version of PCSR without any modifications.
 
-(2) PCSR_cache.cpp: PCSR with cached densities.
+(2) PCSR_cache.cpp: PCSR with only cached densities.
 
 (3) PCSR.cpp: PCSR with cached densities and uneven rebalance
 
